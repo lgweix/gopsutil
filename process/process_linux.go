@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math"
 	"os"
 	"path/filepath"
@@ -135,7 +136,7 @@ func (p *Process) ForegroundWithContext(ctx context.Context) (bool, error) {
 	// see https://github.com/shirou/gopsutil/issues/596#issuecomment-432707831 for implementation details
 	pid := p.Pid
 	statPath := common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "stat")
-	contents, err := os.ReadFile(statPath)
+	contents, err := ioutil.ReadFile(statPath)
 	if err != nil {
 		return false, err
 	}
@@ -314,15 +315,14 @@ func (p *Process) CPUAffinityWithContext(ctx context.Context) ([]int32, error) {
 }
 
 func (p *Process) MemoryInfoWithContext(ctx context.Context) (*MemoryInfoStat, error) {
-	meminfo, _, err := p.fillFromStatmWithContext(ctx)
-	if err != nil {
+	if err := p.fillFromStatusWithContext(ctx); err != nil {
 		return nil, err
 	}
-	return meminfo, nil
+	return p.memInfo, nil
 }
 
 func (p *Process) MemoryInfoExWithContext(ctx context.Context) (*MemoryInfoExStat, error) {
-	_, memInfoEx, err := p.fillFromStatmWithContext(ctx)
+	memInfoEx, err := p.fillFromStatmWithContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +390,7 @@ func (p *Process) MemoryMapsWithContext(ctx context.Context, grouped bool) (*[]M
 			smapsPath = smapsRollupPath
 		}
 	}
-	contents, err := os.ReadFile(smapsPath)
+	contents, err := ioutil.ReadFile(smapsPath)
 	if err != nil {
 		return nil, err
 	}
@@ -483,7 +483,7 @@ func (p *Process) MemoryMapsWithContext(ctx context.Context, grouped bool) (*[]M
 func (p *Process) EnvironWithContext(ctx context.Context) ([]string, error) {
 	environPath := common.HostProcWithContext(ctx, strconv.Itoa(int(p.Pid)), "environ")
 
-	environContent, err := os.ReadFile(environPath)
+	environContent, err := ioutil.ReadFile(environPath)
 	if err != nil {
 		return nil, err
 	}
@@ -667,7 +667,7 @@ func (p *Process) fillFromExeWithContext(ctx context.Context) (string, error) {
 func (p *Process) fillFromCmdlineWithContext(ctx context.Context) (string, error) {
 	pid := p.Pid
 	cmdPath := common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "cmdline")
-	cmdline, err := os.ReadFile(cmdPath)
+	cmdline, err := ioutil.ReadFile(cmdPath)
 	if err != nil {
 		return "", err
 	}
@@ -681,7 +681,7 @@ func (p *Process) fillFromCmdlineWithContext(ctx context.Context) (string, error
 func (p *Process) fillSliceFromCmdlineWithContext(ctx context.Context) ([]string, error) {
 	pid := p.Pid
 	cmdPath := common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "cmdline")
-	cmdline, err := os.ReadFile(cmdPath)
+	cmdline, err := ioutil.ReadFile(cmdPath)
 	if err != nil {
 		return nil, err
 	}
@@ -704,7 +704,7 @@ func (p *Process) fillSliceFromCmdlineWithContext(ctx context.Context) ([]string
 func (p *Process) fillFromIOWithContext(ctx context.Context) (*IOCountersStat, error) {
 	pid := p.Pid
 	ioPath := common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "io")
-	ioline, err := os.ReadFile(ioPath)
+	ioline, err := ioutil.ReadFile(ioPath)
 	if err != nil {
 		return nil, err
 	}
@@ -737,43 +737,38 @@ func (p *Process) fillFromIOWithContext(ctx context.Context) (*IOCountersStat, e
 }
 
 // Get memory info from /proc/(pid)/statm
-func (p *Process) fillFromStatmWithContext(ctx context.Context) (*MemoryInfoStat, *MemoryInfoExStat, error) {
+func (p *Process) fillFromStatmWithContext(ctx context.Context) (*MemoryInfoExStat, error) {
 	pid := p.Pid
 	memPath := common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "statm")
-	contents, err := os.ReadFile(memPath)
+	contents, err := ioutil.ReadFile(memPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	fields := strings.Split(string(contents), " ")
 
 	vms, err := strconv.ParseUint(fields[0], 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	rss, err := strconv.ParseUint(fields[1], 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	memInfo := &MemoryInfoStat{
-		RSS: rss * pageSize,
-		VMS: vms * pageSize,
-	}
-
 	shared, err := strconv.ParseUint(fields[2], 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	text, err := strconv.ParseUint(fields[3], 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	lib, err := strconv.ParseUint(fields[4], 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	dirty, err := strconv.ParseUint(fields[5], 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	memInfoEx := &MemoryInfoExStat{
@@ -785,7 +780,7 @@ func (p *Process) fillFromStatmWithContext(ctx context.Context) (*MemoryInfoStat
 		Dirty:  dirty * pageSize,
 	}
 
-	return memInfo, memInfoEx, nil
+	return memInfoEx, nil
 }
 
 // Get name from /proc/(pid)/comm or /proc/(pid)/status
@@ -801,7 +796,7 @@ func (p *Process) fillNameWithContext(ctx context.Context) error {
 func (p *Process) fillFromCommWithContext(ctx context.Context) error {
 	pid := p.Pid
 	statPath := common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "comm")
-	contents, err := os.ReadFile(statPath)
+	contents, err := ioutil.ReadFile(statPath)
 	if err != nil {
 		return err
 	}
@@ -818,7 +813,7 @@ func (p *Process) fillFromStatus() error {
 func (p *Process) fillFromStatusWithContext(ctx context.Context) error {
 	pid := p.Pid
 	statPath := common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "status")
-	contents, err := os.ReadFile(statPath)
+	contents, err := ioutil.ReadFile(statPath)
 	if err != nil {
 		return err
 	}
@@ -844,6 +839,8 @@ func (p *Process) fillFromStatusWithContext(ctx context.Context) error {
 					extendedName := filepath.Base(cmdlineSlice[0])
 					if strings.HasPrefix(extendedName, p.name) {
 						p.name = extendedName
+					} else {
+						p.name = cmdlineSlice[0]
 					}
 				}
 			}
@@ -1025,7 +1022,7 @@ func (p *Process) fillFromTIDStatWithContext(ctx context.Context, tid int32) (ui
 		statPath = common.HostProcWithContext(ctx, strconv.Itoa(int(pid)), "task", strconv.Itoa(int(tid)), "stat")
 	}
 
-	contents, err := os.ReadFile(statPath)
+	contents, err := ioutil.ReadFile(statPath)
 	if err != nil {
 		return 0, 0, nil, 0, 0, 0, nil, err
 	}
